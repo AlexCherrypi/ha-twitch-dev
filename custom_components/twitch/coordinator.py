@@ -15,16 +15,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.config_entry_oauth2_flow import OAuth2Session
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import CONF_CHANNELS, DOMAIN, LOGGER, OAUTH_SCOPES
-
-# Maximum number of concurrent Twitch API requests per update cycle.
-# Limits burst load on the Twitch API.
-_MAX_CONCURRENT_REQUESTS = 10
-
-# Jitter fraction of the poll interval. Each channel fetch is delayed by a
-# random offset in [0, update_interval * _JITTER_FRACTION] before acquiring
-# the semaphore, spreading API calls evenly across the full poll window.
-_JITTER_FRACTION = 1.0
+from .const import (
+    CONF_CHANNELS,
+    CONF_CLEANUP_UNFOLLOWED,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    LOGGER,
+    OAUTH_SCOPES,
+)
 
 type TwitchConfigEntry = ConfigEntry[TwitchCoordinator]
 
@@ -70,14 +69,21 @@ class TwitchCoordinator(DataUpdateCoordinator[dict[str, TwitchUpdate]]):
     ) -> None:
         """Initialize the coordinator."""
         self.twitch = twitch
+        interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         super().__init__(
             hass,
             LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(minutes=5),
+            update_interval=timedelta(minutes=interval),
             config_entry=entry,
         )
         self.session = session
+        self.user_options_snapshot = {
+            CONF_SCAN_INTERVAL: entry.options.get(
+                CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+            ),
+            CONF_CLEANUP_UNFOLLOWED: entry.options.get(CONF_CLEANUP_UNFOLLOWED, False),
+        }
 
     async def _async_setup(self) -> None:
         channels = self.config_entry.options[CONF_CHANNELS]
@@ -117,49 +123,64 @@ class TwitchCoordinator(DataUpdateCoordinator[dict[str, TwitchUpdate]]):
 
         api_channels = {f.broadcaster_login for f in follows.values()}
         config_channels = set(self.config_entry.options[CONF_CHANNELS])
-        # Only sync new follows — channels that were unfollowed are intentionally
-        # kept in the config so they continue to be tracked.
+
         additions = api_channels - config_channels
-        if additions:
-            LOGGER.info(
-                "Discovered new followed channels: %s",
-                ", ".join(sorted(additions)),
-            )
+        removals: set[str] = set()
+        if self.config_entry.options.get(CONF_CLEANUP_UNFOLLOWED, False):
+            removals = config_channels - api_channels
+
+        if additions or removals:
+            updated = sorted((config_channels | additions) - removals)
+            if additions:
+                LOGGER.info(
+                    "Discovered new followed channels: %s",
+                    ", ".join(sorted(additions)),
+                )
+            if removals:
+                LOGGER.info(
+                    "Removing unfollowed channels: %s",
+                    ", ".join(sorted(removals)),
+                )
             self.hass.config_entries.async_update_entry(
                 self.config_entry,
                 options={
                     **self.config_entry.options,
-                    CONF_CHANNELS: sorted(config_channels | additions),
+                    CONF_CHANNELS: updated,
                 },
             )
-            # Add the new users to self.users immediately so they are included
-            # in this update cycle. The normal poll interval will keep them
-            # up to date — no reload needed.
-            for chunk in chunk_list(sorted(additions), 100):
-                self.users.extend(
-                    [u async for u in self.twitch.get_users(logins=list(chunk))]
-                )
+            if additions:
+                for chunk in chunk_list(sorted(additions), 100):
+                    self.users.extend(
+                        [u async for u in self.twitch.get_users(logins=list(chunk))]
+                    )
+            if removals:
+                keep_ids = {f.broadcaster_id for f in follows.values()} | {
+                    self.current_user.id
+                }
+                self.users = [u for u in self.users if u.id in keep_ids]
 
-        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REQUESTS)
-        jitter_window = self.update_interval.total_seconds() * _JITTER_FRACTION
+        # Stagger per-channel API requests across the poll interval so
+        # Twitch sees a steady trickle instead of a burst every cycle.
+        jitter_window = (
+            self.update_interval.total_seconds()
+            if self.update_interval is not None
+            else 300.0
+        )
 
         async def _fetch_channel(channel: TwitchUser) -> tuple[str, TwitchUpdate]:
-            # Spread requests across the full poll interval so Twitch receives
-            # a steady trickle instead of a burst on every update cycle.
             await asyncio.sleep(random.uniform(0, jitter_window))
-            async with semaphore:
-                followers = await self.twitch.get_channel_followers(channel.id)
-                stream = streams.get(channel.id)
-                follow = follows.get(channel.id)
-                sub: UserSubscription | None = None
-                try:
-                    sub = await self.twitch.check_user_subscription(
-                        user_id=self.current_user.id, broadcaster_id=channel.id
-                    )
-                except TwitchResourceNotFound:
-                    LOGGER.debug("User is not subscribed to %s", channel.display_name)
-                except TwitchAPIException as exc:
-                    LOGGER.error("Error response on check_user_subscription: %s", exc)
+            followers = await self.twitch.get_channel_followers(channel.id)
+            stream = streams.get(channel.id)
+            follow = follows.get(channel.id)
+            sub: UserSubscription | None = None
+            try:
+                sub = await self.twitch.check_user_subscription(
+                    user_id=self.current_user.id, broadcaster_id=channel.id
+                )
+            except TwitchResourceNotFound:
+                LOGGER.debug("User is not subscribed to %s", channel.display_name)
+            except TwitchAPIException as exc:
+                LOGGER.error("Error response on check_user_subscription: %s", exc)
 
             return channel.id, TwitchUpdate(
                 channel.display_name,
