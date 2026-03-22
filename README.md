@@ -1,27 +1,27 @@
 # Twitch (dev) — Custom Integration
 
-Testversion der Twitch-Integration mit drei Verbesserungen gegenüber dem HA-Core-Stand:
+Test build of the Twitch integration including three improvements over the current HA Core version:
 
-## Änderungen
+## Changes
 
-### 1. Automatischer Follow-Sync (PR [#166196](https://github.com/home-assistant/core/pull/166196))
-Neue Kanäle, denen du auf Twitch folgst, werden automatisch als Sensoren angelegt. Kanäle denen du nicht mehr folgst, werden aus der Config entfernt. Kein manuelles Neu-Einrichten mehr nötig.
+### 1. Automatic follow sync (PR [#166196](https://github.com/home-assistant/core/pull/166196))
+Channels you follow on Twitch are automatically added as sensors. Channels you unfollow are removed from the config. No more manual reconfiguration needed.
 
-### 2. Sensoren für unfollowed Kanäle automatisch löschen (PR [#166198](https://github.com/home-assistant/core/pull/166198))
-Neue Option unter **Einstellungen → Geräte & Dienste → Twitch → Konfigurieren**:
-- **"Remove sensors for unfollowed channels"** (default: aus)
-- Wenn aktiviert: Sensoren für Kanäle, denen du nicht mehr folgst, werden beim nächsten Reload automatisch aus der Entity Registry gelöscht.
-- Wenn deaktiviert: Sensoren bleiben erhalten (bisheriges Verhalten).
+### 2. Option to remove sensors for unfollowed channels (PR [#166198](https://github.com/home-assistant/core/pull/166198))
+New toggle under **Settings → Devices & Services → Twitch → Configure**:
+- **"Remove sensors for unfollowed channels"** (default: off)
+- When enabled: sensors for channels you have unfollowed are permanently removed from the entity registry on the next reload.
+- When disabled: sensors are kept (existing behavior).
 
-### 3. Konfigurierbares Poll-Intervall (PR [#166200](https://github.com/home-assistant/core/pull/166200))
-Neue Option unter **Einstellungen → Geräte & Dienste → Twitch → Konfigurieren**:
+### 3. Configurable poll interval (PR [#166200](https://github.com/home-assistant/core/pull/166200))
+New number field under **Settings → Devices & Services → Twitch → Configure**:
 - **"Poll interval (minutes)"** (default: 5, min: 1, max: 1440)
-- Steuert wie oft HA Twitch nach Updates fragt.
+- Controls how often Home Assistant polls Twitch for updates.
 
 ## Installation via HACS
 
-1. HACS öffnen → ⋮ → **Custom repositories**
+1. Open HACS → ⋮ → **Custom repositories**
 2. URL: `https://github.com/AlexCherrypi/ha-twitch-dev`
-3. Kategorie: **Integration** → **Add**
-4. Nach **"Twitch (dev)"** suchen → **Download**
-5. HA neu starten
+3. Category: **Integration** → **Add**
+4. Search for **"Twitch (dev)"** → **Download**
+5. Restart Home Assistant
