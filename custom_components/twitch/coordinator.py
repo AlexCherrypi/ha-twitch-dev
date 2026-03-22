@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import random
 
 from twitchAPI.helper import first
 from twitchAPI.object.api import FollowedChannel, Stream, TwitchUser, UserSubscription
@@ -15,6 +16,15 @@ from homeassistant.helpers.config_entry_oauth2_flow import OAuth2Session
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import CONF_CHANNELS, DOMAIN, LOGGER, OAUTH_SCOPES
+
+# Maximum number of concurrent Twitch API requests per update cycle.
+# Limits burst load on the Twitch API.
+_MAX_CONCURRENT_REQUESTS = 10
+
+# Jitter fraction of the poll interval. Each channel fetch is delayed by a
+# random offset in [0, update_interval * _JITTER_FRACTION] before acquiring
+# the semaphore, spreading API calls evenly across the full poll window.
+_JITTER_FRACTION = 1.0
 
 type TwitchConfigEntry = ConfigEntry[TwitchCoordinator]
 
@@ -130,19 +140,26 @@ class TwitchCoordinator(DataUpdateCoordinator[dict[str, TwitchUpdate]]):
                     [u async for u in self.twitch.get_users(logins=list(chunk))]
                 )
 
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REQUESTS)
+        jitter_window = self.update_interval.total_seconds() * _JITTER_FRACTION
+
         async def _fetch_channel(channel: TwitchUser) -> tuple[str, TwitchUpdate]:
-            followers = await self.twitch.get_channel_followers(channel.id)
-            stream = streams.get(channel.id)
-            follow = follows.get(channel.id)
-            sub: UserSubscription | None = None
-            try:
-                sub = await self.twitch.check_user_subscription(
-                    user_id=self.current_user.id, broadcaster_id=channel.id
-                )
-            except TwitchResourceNotFound:
-                LOGGER.debug("User is not subscribed to %s", channel.display_name)
-            except TwitchAPIException as exc:
-                LOGGER.error("Error response on check_user_subscription: %s", exc)
+            # Spread requests across the full poll interval so Twitch receives
+            # a steady trickle instead of a burst on every update cycle.
+            await asyncio.sleep(random.uniform(0, jitter_window))
+            async with semaphore:
+                followers = await self.twitch.get_channel_followers(channel.id)
+                stream = streams.get(channel.id)
+                follow = follows.get(channel.id)
+                sub: UserSubscription | None = None
+                try:
+                    sub = await self.twitch.check_user_subscription(
+                        user_id=self.current_user.id, broadcaster_id=channel.id
+                    )
+                except TwitchResourceNotFound:
+                    LOGGER.debug("User is not subscribed to %s", channel.display_name)
+                except TwitchAPIException as exc:
+                    LOGGER.error("Error response on check_user_subscription: %s", exc)
 
             return channel.id, TwitchUpdate(
                 channel.display_name,
